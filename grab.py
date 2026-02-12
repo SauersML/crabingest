@@ -410,6 +410,16 @@ def ingest(source: str, includes: Sequence[str], excludes: Sequence[str]) -> str
             temp_dir.cleanup()
 
 
+def normalize_include_patterns(raw: Sequence[str]) -> list[str]:
+    includes: list[str] = []
+    for item in raw:
+        for part in item.split(","):
+            pat = part.strip()
+            if pat:
+                includes.append(pat)
+    return includes
+
+
 def open_file_with_default_app(path: Path) -> None:
     if sys.platform == "darwin":
         proc = subprocess.run(["open", str(path)], capture_output=True, text=True)
@@ -434,7 +444,7 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Ingest Rust files from a repo/path into one text digest, removing test-scoped code."
     )
     p.add_argument("source", nargs="?", help="Local path, Git URL, or GitHub slug owner/repo")
-    p.add_argument("include", nargs="*", help="Glob include patterns (default: **/*.rs)")
+    p.add_argument("include", nargs="*", help="Include globs as comma-separated patterns (example: src/**,crates/**)")
     p.add_argument("--exclude", action="append", default=[], help="Glob pattern to exclude (repeatable)")
     p.add_argument("-o", "--output", help="Write output to file instead of stdout")
     p.add_argument("--stdout", action="store_true", help="Print digest to stdout (skip file auto-open)")
@@ -444,6 +454,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 class _SelfTests(unittest.TestCase):
+    def test_normalize_include_patterns(self) -> None:
+        got = normalize_include_patterns(["src/**,crates/**", "examples/**", ""])
+        self.assertEqual(got, ["src/**", "crates/**", "examples/**"])
+
     def test_render_file_tree(self) -> None:
         tree = _render_file_tree(["src/main.rs", "src/lib.rs", "src/utils/io.rs"])
         self.assertIn("# File Structure", tree)
@@ -583,8 +597,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.source:
         parser.error("source is required unless --self-test is used")
 
+    include_patterns = normalize_include_patterns(args.include)
+
     try:
-        digest = ingest(args.source, args.include, args.exclude)
+        digest = ingest(args.source, include_patterns, args.exclude)
     except Exception as exc:  # pragma: no cover - CLI boundary
         print(f"error: {exc}", file=sys.stderr)
         return 1
