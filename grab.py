@@ -335,8 +335,36 @@ def strip_test_scopes(rust_code: str) -> str:
     return "".join(out)
 
 
+def _render_file_tree(rel_paths: Sequence[str]) -> str:
+    if not rel_paths:
+        return ""
+
+    root: dict[str, dict] = {}
+    for rel in sorted(rel_paths):
+        parts = [p for p in rel.split("/") if p]
+        node = root
+        for part in parts:
+            node = node.setdefault(part, {})
+
+    lines: list[str] = ["# File Structure"]
+
+    def walk(node: dict[str, dict], prefix: str) -> None:
+        keys = sorted(node.keys())
+        for idx, key in enumerate(keys):
+            last = idx == len(keys) - 1
+            connector = "└── " if last else "├── "
+            lines.append(f"{prefix}{connector}{key}")
+            child = node[key]
+            if child:
+                walk(child, prefix + ("    " if last else "│   "))
+
+    walk(root, "")
+    return "\n".join(lines) + "\n\n"
+
+
 def render_digest(root: Path, files: Sequence[Path]) -> str:
     parts: list[str] = []
+    rendered_paths: list[str] = []
     rendered = 0
     for f in files:
         rel = f.relative_to(root).as_posix()
@@ -347,10 +375,12 @@ def render_digest(root: Path, files: Sequence[Path]) -> str:
         if not cleaned:
             continue
         rendered += 1
+        rendered_paths.append(rel)
         parts.append(f"===== {rel} =====\n{cleaned}\n\n")
     if not parts:
         return ""
-    return "".join(parts).rstrip() + "\n"
+    tree = _render_file_tree(rendered_paths)
+    return (tree + "".join(parts)).rstrip() + "\n"
 
 
 def ingest(source: str, includes: Sequence[str], excludes: Sequence[str]) -> str:
@@ -414,6 +444,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 class _SelfTests(unittest.TestCase):
+    def test_render_file_tree(self) -> None:
+        tree = _render_file_tree(["src/main.rs", "src/lib.rs", "src/utils/io.rs"])
+        self.assertIn("# File Structure", tree)
+        self.assertIn("src", tree)
+        self.assertIn("main.rs", tree)
+        self.assertIn("lib.rs", tree)
+        self.assertIn("utils", tree)
+        self.assertIn("io.rs", tree)
+
     def test_candidate_scan_roots(self) -> None:
         roots = _candidate_scan_roots(["src/**", "crates/*/src/**", "**/*.rs", "README.md"])
         self.assertEqual(roots, ["README.md", "crates", "src"])
