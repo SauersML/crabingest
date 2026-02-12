@@ -84,6 +84,31 @@ def _matches_patterns(rel: str, includes: Sequence[str], excludes: Sequence[str]
     return True
 
 
+def _prefix_before_glob(pattern: str) -> str | None:
+    pat = pattern.strip()
+    if not pat:
+        return None
+    for i, ch in enumerate(pat):
+        if ch in "*?[":
+            pat = pat[:i]
+            break
+    pat = pat.rstrip("/")
+    if not pat:
+        return None
+    return pat
+
+
+def _candidate_scan_roots(includes: Sequence[str]) -> list[str]:
+    if not includes:
+        return []
+    roots: set[str] = set()
+    for pat in includes:
+        root = _prefix_before_glob(pat)
+        if root:
+            roots.add(root)
+    return sorted(roots)
+
+
 def _looks_like_text(data: bytes) -> bool:
     if not data:
         return True
@@ -127,19 +152,36 @@ def find_rust_files(root: Path, includes: Sequence[str], excludes: Sequence[str]
 
 
 def list_remote_rust_paths(repo_dir: Path, includes: Sequence[str], excludes: Sequence[str]) -> list[str]:
-    cmd = ["git", "-C", str(repo_dir), "ls-tree", "-r", "--name-only", "HEAD"]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"git ls-tree failed: {proc.stderr.strip() or proc.stdout.strip()}")
+    scan_roots = _candidate_scan_roots(includes)
+    rels: set[str] = set()
+
+    if scan_roots:
+        for root in scan_roots:
+            cmd = ["git", "-C", str(repo_dir), "ls-tree", "-r", "--name-only", "HEAD", "--", root]
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            if proc.returncode != 0:
+                raise RuntimeError(f"git ls-tree failed: {proc.stderr.strip() or proc.stdout.strip()}")
+            for line in proc.stdout.splitlines():
+                rel = line.strip()
+                if rel:
+                    rels.add(rel)
+    else:
+        cmd = ["git", "-C", str(repo_dir), "ls-tree", "-r", "--name-only", "HEAD"]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise RuntimeError(f"git ls-tree failed: {proc.stderr.strip() or proc.stdout.strip()}")
+        for line in proc.stdout.splitlines():
+            rel = line.strip()
+            if rel:
+                rels.add(rel)
 
     selected: list[str] = []
-    for line in proc.stdout.splitlines():
-        rel = line.strip()
+    for rel in sorted(rels):
         if not rel.endswith(".rs"):
             continue
         if _matches_patterns(rel, includes, excludes):
             selected.append(rel)
-    return sorted(selected)
+    return selected
 
 
 def checkout_remote_paths(repo_dir: Path, rel_paths: Sequence[str]) -> None:
@@ -294,8 +336,7 @@ def strip_test_scopes(rust_code: str) -> str:
 
 
 def render_digest(root: Path, files: Sequence[Path]) -> str:
-    header = f"# Rust Digest\n# Source root: {root}\n# Files: {len(files)}\n\n"
-    parts = [header]
+    parts: list[str] = []
     rendered = 0
     for f in files:
         rel = f.relative_to(root).as_posix()
@@ -307,7 +348,8 @@ def render_digest(root: Path, files: Sequence[Path]) -> str:
             continue
         rendered += 1
         parts.append(f"===== {rel} =====\n{cleaned}\n\n")
-    parts[0] = f"# Rust Digest\n# Source root: {root}\n# Files: {len(files)}\n# Rendered: {rendered}\n\n"
+    if not parts:
+        return ""
     return "".join(parts).rstrip() + "\n"
 
 
@@ -372,6 +414,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 class _SelfTests(unittest.TestCase):
+    def test_candidate_scan_roots(self) -> None:
+        roots = _candidate_scan_roots(["src/**", "crates/*/src/**", "**/*.rs", "README.md"])
+        self.assertEqual(roots, ["README.md", "crates", "src"])
+
     def test_cfg_test_module_removed(self) -> None:
         src = textwrap.dedent(
             """
