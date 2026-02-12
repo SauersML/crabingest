@@ -417,7 +417,25 @@ def normalize_include_patterns(raw: Sequence[str]) -> list[str]:
             pat = part.strip()
             if pat:
                 includes.append(pat)
-    return includes
+
+    expanded: list[str] = []
+    seen: set[str] = set()
+    for pat in includes:
+        candidates = [pat]
+        # Small typo-tolerance: src/models/** -> src/model/** (and similar segment-level plural forms).
+        segs = pat.split("/")
+        for i, seg in enumerate(segs):
+            if not seg or any(ch in seg for ch in "*?["):
+                continue
+            if seg.endswith("s") and len(seg) > 1:
+                alt = segs.copy()
+                alt[i] = seg[:-1]
+                candidates.append("/".join(alt))
+        for c in candidates:
+            if c not in seen:
+                seen.add(c)
+                expanded.append(c)
+    return expanded
 
 
 def open_file_with_default_app(path: Path) -> None:
@@ -456,7 +474,14 @@ def _build_parser() -> argparse.ArgumentParser:
 class _SelfTests(unittest.TestCase):
     def test_normalize_include_patterns(self) -> None:
         got = normalize_include_patterns(["src/**,crates/**", "examples/**", ""])
-        self.assertEqual(got, ["src/**", "crates/**", "examples/**"])
+        self.assertIn("src/**", got)
+        self.assertIn("crates/**", got)
+        self.assertIn("examples/**", got)
+
+    def test_normalize_include_patterns_plural_typo(self) -> None:
+        got = normalize_include_patterns(["src/models/**"])
+        self.assertIn("src/models/**", got)
+        self.assertIn("src/model/**", got)
 
     def test_render_file_tree(self) -> None:
         tree = _render_file_tree(["src/main.rs", "src/lib.rs", "src/utils/io.rs"])
@@ -579,6 +604,15 @@ class _SelfTests(unittest.TestCase):
             p.write_bytes(b"fn ok(){}\n\x00\x01\x02")
             out = ingest(str(root), ["**/*.rs"], [])
             self.assertNotIn("src/weird.rs", out)
+
+    def test_ingest_accepts_models_plural_include(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "src" / "model").mkdir(parents=True)
+            (root / "src" / "model" / "a.rs").write_text("pub fn a(){}\n", encoding="utf-8")
+            includes = normalize_include_patterns(["src/models/**"])
+            out = ingest(str(root), includes, [])
+            self.assertIn("src/model/a.rs", out)
 
 
 def _run_self_tests() -> int:
